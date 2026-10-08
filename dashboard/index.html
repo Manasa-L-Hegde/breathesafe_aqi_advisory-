@@ -1,0 +1,2393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="BreatheSafe — Real-time School AQI Advisory Map across Indian States powered by AWS">
+    <title>BreatheSafe — School AQI Advisory System (India)</title>
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+
+    <!-- Leaflet.js CSS (Free, OpenStreetMap, no API key) -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+
+    <style>
+        /* ── Reset & CSS Variables (Clean Light Theme) ───────────────── */
+        *, *::before, *::after {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            /* AWS Theme Colors */
+            --aws-orange: #FF9900;
+            --aws-orange-hover: #ffaa22;
+            --aws-navy: #232F3E;
+            --aws-navy-light: #2c3e50;
+            --aws-squid-ink: #161e2e;
+            --aws-border: #d5dbdb;
+
+            /* Surfaces */
+            --bg-page: #f2f3f3;
+            --bg-surface: #ffffff;
+            --bg-surface-subtle: #f8f9fa;
+            --border-color: #d5dbdb;
+            --border-focus: #FF9900;
+
+            /* Typography */
+            --text-main: #232F3E;          /* AWS Navy */
+            --text-secondary: #545b64;     /* AWS Console secondary text */
+            --text-muted: #879596;
+
+            /* Official Indian National AQI Severity Colors (CPCB) */
+            --aqi-good: #10b981;          /* 0–50  */
+            --aqi-satisfactory: #22c55e;  /* 51–100 */
+            --aqi-moderate: #eab308;      /* 101–200 */
+            --aqi-poor: #f97316;          /* 201–300 */
+            --aqi-very-poor: #ef4444;     /* 301–400 */
+            --aqi-severe: #881337;        /* 401+  */
+
+            /* Decision Badge Colors */
+            --go-bg: #FF9900;
+            --go-border: #EC7211;
+            --go-text: #232F3E;
+            --caution-bg: #fffbeb;
+            --caution-border: #f59e0b;
+            --caution-text: #92400e;
+            --nogo-bg: #fef2f2;
+            --nogo-border: #ef4444;
+            --nogo-text: #991b1b;
+
+            /* AWS Console radius scale (6-8px, not round pills) */
+            --radius-sm: 6px;
+            --radius-md: 8px;    /* cards */
+            --radius-btn: 8px;   /* buttons */
+            --radius-lg: 12px;   /* panels/modals */
+            --radius-full: 9999px;
+
+            /* Shadows */
+            --shadow-sm: 0 1px 3px rgba(35,47,62,0.06), 0 1px 2px rgba(35,47,62,0.04);
+            --shadow-md: 0 4px 12px -1px rgba(35,47,62,0.10), 0 2px 6px -1px rgba(35,47,62,0.05);
+            --shadow-lg: 0 14px 28px -4px rgba(35,47,62,0.15), 0 6px 12px -2px rgba(35,47,62,0.07);
+
+            --font-sans: "Amazon Ember", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+
+        html, body {
+            height: 100%;
+            /* Use dvh where supported so mobile address-bar height is excluded */
+            height: 100dvh;
+        }
+
+        body {
+            font-family: var(--font-sans);
+            background: var(--bg-page);
+            color: var(--text-main);
+            width: 100vw;
+            overflow: hidden;
+            display: flex;
+            position: relative;
+        }
+
+        /* Note: Tile filter removed for Esri Light Gray Canvas basemap */
+
+        /* ── Loading Shimmer Overlay ────────────────────────────────── */
+        #map-loading {
+            position: absolute;
+            inset: 0;
+            z-index: 900;
+            background: #f1f5f9;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 16px;
+            transition: opacity 0.4s ease;
+            pointer-events: none;
+        }
+
+        #map-loading.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .shimmer-bar {
+            width: 240px;
+            height: 12px;
+            border-radius: var(--radius-full);
+            background: linear-gradient(90deg, #e2e8f0 25%, #f1f5f9 50%, #e2e8f0 75%);
+            background-size: 400% 100%;
+            animation: shimmerSlide 1.4s ease-in-out infinite;
+        }
+
+        .shimmer-bar:nth-child(2) { width: 160px; animation-delay: 0.15s; }
+        .shimmer-bar:nth-child(3) { width: 200px; animation-delay: 0.3s; }
+
+        .shimmer-label {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-muted);
+            letter-spacing: 0.2px;
+        }
+
+        @keyframes shimmerSlide {
+            0%   { background-position: 100% 0; }
+            100% { background-position: -100% 0; }
+        }
+
+        /* ── Full-Screen Leaflet Map ────────────────────────────────── */
+        #map {
+            width: 100%;
+            height: 100%;
+            height: 100dvh;
+            z-index: 1;
+            background: #e8edf2;
+        }
+
+        /* ── Top-Left Floating Control Bar ──────────────────────────── */
+        .top-nav {
+            position: absolute;
+            top: 14px;
+            left: 14px;
+            z-index: 1000;
+            width: calc(100% - 28px);
+            max-width: 448px;
+            display: flex;
+            flex-direction: column;
+            gap: 9px;
+            pointer-events: none;
+        }
+
+        .top-nav > * { pointer-events: auto; }
+
+        .brand-header {
+            background: rgba(255, 255, 255, 0.96);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            padding: 11px 14px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            box-shadow: var(--shadow-md);
+        }
+
+        .brand-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-width: 0;
+        }
+
+        .brand-logo-icon {
+            width: 34px;
+            height: 34px;
+            flex-shrink: 0;
+            border-radius: var(--radius-btn);
+            background: var(--aws-navy);
+            color: var(--aws-orange);
+            border: 1.5px solid var(--aws-orange);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 15px;
+            letter-spacing: -0.5px;
+            box-shadow: 0 2px 8px rgba(35,47,62,0.22);
+            transition: transform 150ms ease;
+        }
+
+        .brand-logo-icon:hover {
+            transform: scale(1.05);
+        }
+
+        .brand-title {
+            font-size: 16px;
+            font-weight: 800;
+            letter-spacing: -0.4px;
+            color: var(--text-main);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            white-space: nowrap;
+        }
+
+        /* Pulsing live dot */
+        .live-dot {
+            display: inline-block;
+            width: 7px;
+            height: 7px;
+            background: #10b981;
+            border-radius: 50%;
+            animation: livePulse 2.2s ease-in-out infinite;
+        }
+
+        @keyframes livePulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(16,185,129,0.6); }
+            50%       { box-shadow: 0 0 0 5px rgba(16,185,129,0); }
+        }
+
+        .brand-subtitle {
+            font-size: 11px;
+            color: var(--text-secondary);
+            font-weight: 500;
+            white-space: nowrap;
+        }
+
+        .brand-right {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            flex-shrink: 0;
+        }
+
+        .aws-tag {
+            font-size: 10px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            background: var(--aws-navy);
+            color: var(--aws-orange);
+            border: 1.5px solid var(--aws-orange);
+            padding: 3px 8px;
+            border-radius: var(--radius-sm);
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            white-space: nowrap;
+            box-shadow: 0 1px 3px rgba(35,47,62,0.15);
+            transition: transform 150ms ease, box-shadow 150ms ease;
+        }
+
+        .aws-tag:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 3px 8px rgba(255, 153, 0, 0.35);
+        }
+
+        /* ── Search Bar ────────────────────────────────────────────── */
+        .search-card {
+            background: rgba(255, 255, 255, 0.98);
+            backdrop-filter: blur(14px);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            padding: 9px 13px;
+            box-shadow: var(--shadow-md);
+            position: relative;
+            transition: border-color 150ms ease, box-shadow 150ms ease;
+        }
+
+        .search-card:focus-within {
+            border-color: var(--aws-orange);
+            box-shadow: 0 0 0 2px rgba(255, 153, 0, 0.2), var(--shadow-md);
+        }
+
+        .search-box {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .search-icon { color: var(--text-muted); flex-shrink: 0; }
+
+        .search-input {
+            width: 100%;
+            border: none;
+            outline: none;
+            font-family: var(--font-sans);
+            font-size: 13.5px;
+            color: var(--text-main);
+            background: transparent;
+        }
+
+        .search-input::placeholder { color: var(--text-muted); }
+
+        .clear-btn {
+            background: #f1f5f9;
+            border: none;
+            border-radius: 50%;
+            width: 22px;
+            height: 22px;
+            font-size: 11px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            transition: background 150ms ease;
+        }
+
+        .clear-btn:hover { background: #e2e8f0; }
+
+        /* Search Dropdown */
+        .search-dropdown {
+            position: absolute;
+            top: calc(100% + 6px);
+            left: 0;
+            right: 0;
+            background: var(--bg-surface);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            box-shadow: var(--shadow-lg);
+            max-height: 280px;
+            overflow-y: auto;
+            display: none;
+            z-index: 1010;
+        }
+
+        .search-dropdown.active { display: block; }
+
+        .search-item {
+            padding: 10px 14px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid var(--border-color);
+            cursor: pointer;
+            transition: background 120ms ease;
+        }
+
+        .search-item:last-child { border-bottom: none; }
+        .search-item:hover { background: var(--bg-surface-subtle); }
+
+        .search-item-info { display: flex; flex-direction: column; gap: 2px; }
+        .search-item-name { font-size: 13px; font-weight: 700; color: var(--aws-navy); }
+        .search-item-state { font-size: 11px; color: var(--text-secondary); }
+
+        .search-item-badge {
+            font-size: 11.5px;
+            font-family: var(--font-mono);
+            font-weight: 700;
+            padding: 3px 9px;
+            border-radius: var(--radius-full);
+            color: white;
+        }
+
+        /* ── State Filter Chips ────────────────────────────────────── */
+        /* Wrapper card — gives chips a frosted-glass container */
+        .chips-card {
+            background: rgba(255,255,255,0.96);
+            backdrop-filter: blur(14px);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            padding: 8px 12px;
+            box-shadow: var(--shadow-sm);
+        }
+
+        .state-chips {
+            display: flex;
+            gap: 6px;
+            overflow-x: auto;
+            padding-bottom: 1px;
+            scrollbar-width: none;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        .state-chips::-webkit-scrollbar { display: none; }
+
+        .chip-btn {
+            /* inactive: rounded AWS console button */
+            background: #ffffff;
+            border: 1.5px solid var(--border-color);
+            padding: 5px 13px;
+            border-radius: var(--radius-btn);
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--aws-navy);
+            cursor: pointer;
+            white-space: nowrap;
+            transition: transform 150ms ease, box-shadow 150ms ease, background 150ms ease, border-color 150ms ease, color 150ms ease;
+            line-height: 1.4;
+        }
+
+        .chip-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 2px 6px rgba(35, 47, 62, 0.12);
+            border-color: var(--aws-navy);
+            color: var(--aws-navy);
+            background: #fbfbfb;
+        }
+
+        /* active: AWS Orange button with AWS navy text and warm glow */
+        .chip-btn.active {
+            background: var(--aws-orange);
+            border-color: var(--aws-orange);
+            color: var(--aws-navy);
+            font-weight: 800;
+            box-shadow: 0 2px 8px rgba(255, 153, 0, 0.35);
+        }
+
+        .chip-btn.active:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 3px 10px rgba(255, 153, 0, 0.45);
+            background: var(--aws-orange-hover);
+        }
+
+        /* ── Floating AQI Legend (desktop) ─────────────────────────── */
+        .legend-card {
+            position: absolute;
+            bottom: 24px;
+            left: 14px;
+            z-index: 1000;
+            background: rgba(255,255,255,0.96);
+            backdrop-filter: blur(10px);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            padding: 10px 14px;
+            box-shadow: var(--shadow-md);
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+            font-size: 11px;
+            pointer-events: auto;
+            max-width: 340px;
+            transition: transform 150ms ease, box-shadow 150ms ease;
+        }
+
+        .legend-card:hover {
+            transform: translateY(-1px);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .legend-title {
+            font-weight: 800;
+            color: var(--aws-navy);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+
+        .legend-items {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-weight: 500;
+            color: var(--text-secondary);
+        }
+
+        .legend-dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        /* Mobile legend: collapsible bottom strip */
+        .legend-toggle-btn {
+            display: none; /* shown only on mobile */
+            position: absolute;
+            bottom: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            background: #ffffff;
+            backdrop-filter: blur(10px);
+            border: 1.5px solid var(--aws-navy);
+            border-radius: var(--radius-btn);
+            padding: 7px 18px;
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--aws-navy);
+            cursor: pointer;
+            box-shadow: var(--shadow-md);
+            pointer-events: auto;
+            white-space: nowrap;
+            transition: transform 150ms ease, box-shadow 150ms ease, background 150ms ease, color 150ms ease;
+        }
+
+        .legend-toggle-btn:hover {
+            background: var(--aws-navy);
+            color: #ffffff;
+            transform: translateX(-50%) translateY(-1px);
+            box-shadow: var(--shadow-lg);
+        }
+
+        /* Mobile legend drawer */
+        .legend-mobile-sheet {
+            display: none;
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 1040;
+            background: rgba(255,255,255,0.98);
+            border-radius: 20px 20px 0 0;
+            border-top: 1px solid var(--border-color);
+            box-shadow: 0 -8px 24px rgba(0,0,0,0.1);
+            padding: 14px 20px 28px;
+            transform: translateY(100%);
+            transition: transform 0.32s cubic-bezier(0.16,1,0.3,1);
+            pointer-events: auto;
+        }
+
+        .legend-mobile-sheet.open { transform: translateY(0); }
+
+        .legend-sheet-handle {
+            width: 36px; height: 4px;
+            background: #cbd5e1;
+            border-radius: 2px;
+            margin: 0 auto 14px auto;
+        }
+
+        .legend-sheet-title {
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--text-main);
+            margin-bottom: 12px;
+        }
+
+        .legend-sheet-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .legend-sheet-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text-secondary);
+        }
+
+        .legend-sheet-dot {
+            width: 12px; height: 12px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        /* ── Slide-in Right Panel ───────────────────────────────────── */
+        .side-panel {
+            position: absolute;
+            top: 14px;
+            right: 14px;
+            bottom: 14px;
+            width: 420px;
+            max-width: calc(100vw - 28px);
+            background: rgba(255,255,255,0.98);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-lg);
+            z-index: 1050;
+            display: flex;
+            flex-direction: column;
+            transform: translateX(calc(100% + 20px));
+            transition: transform 0.36s cubic-bezier(0.16, 1, 0.3, 1);
+            overflow: hidden;
+        }
+
+        .side-panel.open { transform: translateX(0); }
+
+        .panel-header {
+            padding: 15px 18px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .panel-station-info { display: flex; flex-direction: column; gap: 2px; }
+
+        .panel-station-title {
+            font-size: 16px;
+            font-weight: 800;
+            color: var(--text-main);
+            line-height: 1.3;
+        }
+
+        .panel-station-subtitle {
+            font-size: 12px;
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .panel-close-btn {
+            background: #ffffff;
+            border: 1.5px solid var(--aws-navy);
+            width: 30px; height: 30px;
+            border-radius: var(--radius-btn);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            color: var(--aws-navy);
+            font-size: 13px;
+            font-weight: 700;
+            transition: all 150ms ease;
+            flex-shrink: 0;
+        }
+
+        .panel-close-btn:hover {
+            background: var(--aws-navy);
+            color: #ffffff;
+            transform: translateY(-1px);
+            box-shadow: 0 2px 6px rgba(35, 47, 62, 0.2);
+        }
+
+        .panel-content {
+            padding: 18px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        /* Cached data warning */
+        .cached-badge {
+            background: #fffbeb;
+            border: 1px solid #fde68a;
+            border-radius: var(--radius-btn);
+            padding: 8px 12px;
+            font-size: 12px;
+            color: #b45309;
+            font-weight: 500;
+            display: none;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .cached-badge.visible { display: flex; }
+
+        /* Hero AQI */
+        .hero-aqi-box {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: var(--bg-surface-subtle);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            padding: 16px 18px;
+            transition: transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease;
+        }
+
+        .hero-aqi-box:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(35, 47, 62, 0.08);
+            border-color: #cbd5e1;
+        }
+
+        .hero-aqi-left { display: flex; flex-direction: column; gap: 2px; }
+
+        .hero-aqi-label {
+            font-size: 10px;
+            text-transform: uppercase;
+            font-weight: 700;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+        }
+
+        .hero-aqi-num {
+            font-size: 50px;
+            font-weight: 900;
+            font-family: var(--font-mono);
+            line-height: 1;
+            letter-spacing: -2px;
+        }
+
+        .hero-aqi-category { font-size: 14px; font-weight: 700; margin-top: 4px; }
+
+        /* Decision Pill — Tactile elevation on hover */
+        .decision-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            padding: 8px 16px;
+            border-radius: var(--radius-btn);
+            font-size: 13.5px;
+            font-weight: 800;
+            letter-spacing: 0.4px;
+            border-width: 1.5px;
+            border-style: solid;
+            box-shadow: var(--shadow-sm);
+            transition: transform 150ms ease, box-shadow 150ms ease;
+            cursor: default;
+        }
+
+        .decision-pill:hover {
+            transform: translateY(-1px);
+            box-shadow: var(--shadow-md);
+        }
+
+        /* Solid orange for primary actions (like "GO") */
+        .decision-pill.go {
+            background: var(--aws-orange);
+            border-color: var(--go-border);
+            color: var(--aws-navy);
+        }
+
+        .decision-pill.go:hover {
+            box-shadow: 0 4px 14px rgba(255, 153, 0, 0.4);
+        }
+
+        .decision-pill.caution {
+            background: var(--caution-bg);
+            border-color: var(--caution-border);
+            color: var(--caution-text);
+        }
+
+        .decision-pill.caution:hover {
+            box-shadow: 0 4px 12px rgba(245, 158, 11, 0.25);
+        }
+
+        .decision-pill.nogo {
+            background: var(--nogo-bg);
+            border-color: var(--nogo-border);
+            color: var(--nogo-text);
+        }
+
+        .decision-pill.nogo:hover {
+            box-shadow: 0 4px 12px rgba(239, 68, 68, 0.25);
+        }
+
+        .pill-icon { font-size: 15px; }
+
+        /* Panel section layout */
+        .panel-section { display: flex; flex-direction: column; gap: 8px; }
+
+        .section-header-title {
+            font-size: 11.5px;
+            font-weight: 800;
+            color: var(--aws-navy);
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .summary-text {
+            font-size: 13px;
+            color: var(--text-secondary);
+            line-height: 1.65;
+            background: white;
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            padding: 11px 13px;
+            transition: transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease;
+        }
+
+        .summary-text:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(35, 47, 62, 0.08);
+            border-color: #cbd5e1;
+        }
+
+        .actions-checklist { list-style: none; display: flex; flex-direction: column; gap: 7px; }
+
+        .action-point {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            font-size: 12px;
+            color: var(--text-main);
+            background: white;
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            padding: 9px 12px;
+            line-height: 1.55;
+            transition: transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease;
+        }
+
+        .action-point:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 3px 8px rgba(35, 47, 62, 0.08);
+            border-color: #cbd5e1;
+        }
+
+        .action-point-icon { color: var(--aws-orange); flex-shrink: 0; margin-top: 1px; }
+
+        .forecast-container {
+            background: white;
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            padding: 13px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            transition: transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease;
+        }
+
+        .forecast-container:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(35, 47, 62, 0.08);
+            border-color: #cbd5e1;
+        }
+
+        .forecast-value { font-family: var(--font-mono); font-weight: 700; color: var(--aws-navy); }
+
+        .sparkline-svg { width: 100%; height: 58px; overflow: visible; }
+
+        .forecast-days-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 7px;
+            margin-top: 4px;
+        }
+
+        .forecast-day-card {
+            background: var(--bg-surface-subtle);
+            border-radius: var(--radius-sm);
+            padding: 8px;
+            text-align: center;
+            transition: transform 150ms ease, box-shadow 150ms ease, background 150ms ease;
+        }
+
+        .forecast-day-card:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 2px 8px rgba(35, 47, 62, 0.08);
+            background: #ffffff;
+        }
+
+        .day-label { font-size: 10px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; }
+        .day-val   { font-size: 13px; font-weight: 700; font-family: var(--font-mono); margin: 2px 0; }
+        .day-range { font-size: 9px; color: var(--text-muted); }
+
+        /* ── Custom Leaflet Map Pins ────────────────────────────────── */
+        .aqi-map-pin {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 38px;
+            height: 38px;
+            border-radius: 50%;
+            color: white;
+            font-family: var(--font-mono);
+            font-weight: 800;
+            font-size: 12px;
+            box-shadow: 0 3px 8px rgba(0,0,0,0.22), 0 1px 3px rgba(0,0,0,0.12);
+            border: 2.5px solid rgba(255,255,255,0.92);
+            cursor: pointer;
+            transition: transform 150ms ease, box-shadow 150ms ease;
+        }
+
+        .aqi-map-pin:hover {
+            transform: scale(1.15);
+            box-shadow: 0 0 16px var(--marker-color, rgba(255,153,0,0.7)), 0 4px 10px rgba(0,0,0,0.22);
+            z-index: 1000 !important;
+        }
+
+        /* Selected pin: AWS navy ring + glowing pulse animation */
+        .aqi-map-pin.selected {
+            outline: 3px solid var(--aws-navy);
+            outline-offset: 2px;
+            transform: scale(1.2);
+            box-shadow: 0 0 16px var(--marker-color, rgba(255,153,0,0.7));
+            animation: pinPulse 2s ease-in-out infinite;
+        }
+
+        @keyframes pinPulse {
+            0%, 100% { box-shadow: 0 0 12px var(--marker-color, rgba(255,153,0,0.5)), 0 0 0 0 rgba(35,47,62,0.45); }
+            50%       { box-shadow: 0 0 18px var(--marker-color, rgba(255,153,0,0.75)), 0 0 0 6px rgba(35,47,62,0); }
+        }
+
+        /* ── Settings gear (outlined navy button) ────────────────────── */
+        .api-config-btn {
+            background: transparent;
+            border: 1.5px solid var(--aws-navy);
+            color: var(--aws-navy);
+            cursor: pointer;
+            padding: 4px 8px;
+            display: flex;
+            align-items: center;
+            border-radius: var(--radius-btn);
+            transition: all 150ms ease;
+        }
+
+        .api-config-btn:hover {
+            background: var(--aws-navy);
+            color: #ffffff;
+            transform: translateY(-1px);
+            box-shadow: 0 2px 6px rgba(35, 47, 62, 0.2);
+        }
+
+        /* ── Leaflet zoom controls — nudge away from panel ──────────── */
+        .leaflet-top.leaflet-right { top: 14px; right: 14px; }
+        .leaflet-control-zoom a {
+            border-radius: var(--radius-btn) !important;
+            border-color: var(--border-color) !important;
+            color: var(--text-main) !important;
+        }
+
+        /* Mobile handle for bottom sheet */
+        .mobile-handle {
+            width: 38px; height: 4px;
+            background: #cbd5e1;
+            border-radius: 2px;
+            margin: 10px auto 4px auto;
+        }
+
+        /* ── Responsive: 768px — Side panel → bottom sheet ─────────── */
+        @media (max-width: 768px) {
+            .side-panel {
+                top: auto;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                width: 100vw;
+                max-width: 100vw;
+                height: 78vh;
+                border-radius: 20px 20px 0 0;
+                transform: translateY(106%);
+            }
+
+            .side-panel.open { transform: translateY(0); }
+
+            .legend-card { display: none; }  /* replaced by mobile bottom sheet */
+            .legend-toggle-btn { display: block; }
+            .legend-mobile-sheet { display: block; }
+        }
+
+        /* ── Responsive: 600px — search bar goes full-width, brand collapses */
+        @media (max-width: 600px) {
+            .top-nav {
+                top: 10px;
+                left: 10px;
+                width: calc(100% - 20px);
+                max-width: none;  /* full width */
+                gap: 8px;
+            }
+
+            .brand-subtitle { display: none; }  /* saves space on small screens */
+
+            .search-input {
+                font-size: 13px;
+            }
+
+            .chips-card {
+                padding: 7px 10px;
+            }
+
+            /* Chips stay horizontally scrollable on narrow screens */
+            .state-chips { gap: 5px; }
+
+            .chip-btn {
+                font-size: 11.5px;
+                padding: 4px 11px;
+            }
+        }
+
+        /* ── Responsive: 375px (iPhone SE) ─────────────────────────── */
+        @media (max-width: 390px) {
+            .brand-title { font-size: 14px; }
+            .aws-tag { display: none; }  /* hide on very narrow viewports */
+        }
+
+        /* ── Non-blocking API Key Banner ────────────────────────────── */
+        .api-key-banner {
+            background: #fffbeb;
+            border: 1px solid #fde68a;
+            border-radius: var(--radius-btn);
+            padding: 7px 12px;
+            font-size: 11.5px;
+            font-weight: 600;
+            color: #92400e;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            cursor: pointer;
+            box-shadow: var(--shadow-sm);
+            transition: transform 150ms ease, box-shadow 150ms ease, background 150ms ease;
+            pointer-events: auto;
+        }
+
+        .api-key-banner:hover {
+            background: #fef3c7;
+            transform: translateY(-1px);
+            box-shadow: var(--shadow-md);
+        }
+
+        .api-key-banner.hidden {
+            display: none !important;
+        }
+
+        .api-key-banner-left {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .banner-icon {
+            font-size: 13px;
+        }
+
+        .banner-action-link {
+            font-size: 11px;
+            font-weight: 700;
+            color: #b45309;
+            text-decoration: underline;
+            text-underline-offset: 2px;
+            white-space: nowrap;
+        }
+
+        /* ── AQICN Token Configuration Modal ────────────────────────── */
+        .token-modal-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 2000;
+            background: rgba(35, 47, 62, 0.55);
+            backdrop-filter: blur(4px);
+            -webkit-backdrop-filter: blur(4px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 150ms ease;
+        }
+
+        .token-modal-overlay.active {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .token-modal-card {
+            background: #ffffff;
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-lg);
+            width: 100%;
+            max-width: 440px;
+            padding: 22px 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            transform: scale(0.96) translateY(4px);
+            transition: transform 150ms ease;
+        }
+
+        .token-modal-overlay.active .token-modal-card {
+            transform: scale(1) translateY(0);
+        }
+
+        .modal-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .modal-title {
+            font-size: 16px;
+            font-weight: 800;
+            color: var(--aws-navy);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .modal-close-btn {
+            background: #ffffff;
+            border: 1.5px solid var(--aws-navy);
+            color: var(--aws-navy);
+            width: 28px;
+            height: 28px;
+            border-radius: var(--radius-btn);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 13px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 150ms ease;
+        }
+
+        .modal-close-btn:hover {
+            background: var(--aws-navy);
+            color: #ffffff;
+            transform: translateY(-1px);
+        }
+
+        .token-field-group {
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+        }
+
+        .token-label-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .token-label {
+            font-size: 12.5px;
+            font-weight: 700;
+            color: var(--aws-navy);
+        }
+
+        .token-status-pill {
+            font-size: 10.5px;
+            font-weight: 700;
+            color: #065f46;
+            background: #ecfdf5;
+            border: 1px solid #10b981;
+            border-radius: var(--radius-sm);
+            padding: 2px 7px;
+            display: none;
+        }
+
+        .token-input-wrapper {
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+
+        .token-input {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1.5px solid var(--border-color);
+            border-radius: var(--radius-btn);
+            font-family: var(--font-mono);
+            font-size: 13px;
+            color: var(--text-main);
+            background: #ffffff;
+            outline: none;
+            transition: border-color 150ms ease, box-shadow 150ms ease;
+        }
+
+        .token-input:focus {
+            border-color: var(--aws-orange);
+            box-shadow: 0 0 0 2px rgba(255, 153, 0, 0.25);
+        }
+
+        .token-helper-text {
+            font-size: 11.5px;
+            color: var(--text-secondary);
+            line-height: 1.45;
+        }
+
+        .token-link {
+            color: #0284c7;
+            text-decoration: underline;
+            text-underline-offset: 2px;
+            font-weight: 600;
+            transition: color 150ms ease;
+        }
+
+        .token-link:hover {
+            color: var(--aws-orange);
+        }
+
+        .modal-actions {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 14px;
+        }
+
+        .token-clear-btn {
+            background: transparent;
+            border: 1.5px solid #cbd5e1;
+            color: var(--text-secondary);
+            padding: 8px 14px;
+            border-radius: var(--radius-btn);
+            font-size: 12.5px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 150ms ease;
+            display: none;
+        }
+
+        .token-clear-btn:hover {
+            border-color: #ef4444;
+            color: #ef4444;
+        }
+
+        .token-save-btn {
+            background: var(--aws-orange);
+            border: 1.5px solid #EC7211;
+            color: var(--aws-navy);
+            padding: 8px 20px;
+            border-radius: var(--radius-btn);
+            font-size: 13px;
+            font-weight: 800;
+            cursor: pointer;
+            box-shadow: 0 2px 6px rgba(255, 153, 0, 0.25);
+            transition: transform 150ms ease, box-shadow 150ms ease, background 150ms ease;
+        }
+
+        .token-save-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(255, 153, 0, 0.35);
+            background: var(--aws-orange-hover);
+        }
+
+        /* ── Mock Mode Pill & Toggle Controls ── */
+        .mock-mode-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: var(--radius-full);
+            font-size: 11px;
+            font-weight: 700;
+            cursor: pointer;
+            border: 1.5px solid #cbd5e1;
+            background: #ffffff;
+            color: var(--text-secondary);
+            transition: all 150ms ease;
+        }
+        .mock-mode-pill:hover {
+            border-color: var(--aws-navy);
+            color: var(--aws-navy);
+        }
+        .mock-mode-pill.active {
+            background: #eff6ff;
+            border-color: #3b82f6;
+            color: #1d4ed8;
+        }
+        .mock-pill-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: #94a3b8;
+            transition: all 150ms ease;
+        }
+        .mock-mode-pill.active .mock-pill-dot {
+            background: #3b82f6;
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);
+        }
+
+        /* Toggle Switch in Modal */
+        .switch-toggle-row {
+            background: #f8fafc;
+            border: 1.5px solid #e2e8f0;
+            border-radius: var(--radius-md);
+            padding: 12px 14px;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+        .switch-toggle-info {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .switch-toggle-title {
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--aws-navy);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .switch-toggle-desc {
+            font-size: 11.5px;
+            color: var(--text-secondary);
+            line-height: 1.35;
+        }
+        .toggle-switch-wrapper {
+            position: relative;
+            display: inline-block;
+            width: 46px;
+            height: 26px;
+            flex-shrink: 0;
+        }
+        .toggle-switch-wrapper input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-color: #cbd5e1;
+            transition: .25s cubic-bezier(0.16, 1, 0.3, 1);
+            border-radius: 34px;
+        }
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 20px;
+            width: 20px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .25s cubic-bezier(0.16, 1, 0.3, 1);
+            border-radius: 50%;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+        }
+        input:checked + .toggle-slider {
+            background-color: #3b82f6;
+        }
+        input:checked + .toggle-slider:before {
+            transform: translateX(20px);
+        }
+
+        /* SNS Alert Simulation Button */
+        .sns-test-btn {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 10px 14px;
+            background: #f0fdf4;
+            border: 1.5px solid #86efac;
+            color: #166534;
+            border-radius: var(--radius-btn);
+            font-size: 12.5px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 150ms ease;
+            box-shadow: 0 1px 2px rgba(22, 101, 52, 0.05);
+        }
+        .sns-test-btn:hover {
+            background: #dcfce7;
+            border-color: #22c55e;
+            transform: translateY(-1px);
+            box-shadow: 0 3px 8px rgba(22, 101, 52, 0.12);
+        }
+
+        /* SNS Toast Notification */
+        #sns-toast {
+            position: fixed;
+            top: 24px;
+            right: 24px;
+            width: calc(100vw - 48px);
+            max-width: 440px;
+            background: #1e293b;
+            color: #ffffff;
+            padding: 16px 18px;
+            border-radius: var(--radius-lg);
+            box-shadow: 0 16px 36px rgba(15, 23, 42, 0.3);
+            z-index: 3000;
+            transform: translateY(-30px);
+            opacity: 0;
+            pointer-events: none;
+            transition: all 250ms cubic-bezier(0.16, 1, 0.3, 1);
+            border-left: 5px solid #10b981;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        #sns-toast.visible {
+            transform: translateY(0);
+            opacity: 1;
+            pointer-events: auto;
+        }
+        .toast-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .toast-title {
+            font-size: 12px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: #34d399;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .toast-close-btn {
+            background: transparent;
+            border: none;
+            color: #94a3b8;
+            cursor: pointer;
+            font-size: 15px;
+            line-height: 1;
+        }
+        .toast-body {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: #cbd5e1;
+            background: #0f172a;
+            border-radius: var(--radius-sm);
+            padding: 10px;
+            white-space: pre-wrap;
+            line-height: 1.45;
+            max-height: 180px;
+            overflow-y: auto;
+            border: 1px solid #334155;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Loading shimmer while tiles load -->
+    <div id="map-loading" role="status" aria-label="Loading map">
+        <div class="shimmer-label">Loading India AQI Map…</div>
+        <div class="shimmer-bar"></div>
+        <div class="shimmer-bar"></div>
+        <div class="shimmer-bar"></div>
+    </div>
+
+    <!-- Full-screen Leaflet Map of India -->
+    <div id="map"></div>
+
+    <!-- Top Left Control Bar: Brand, Search, Indian State Quick-Chips -->
+    <div class="top-nav">
+        <!-- Brand Card -->
+        <div class="brand-header">
+            <div class="brand-left">
+                <div class="brand-logo-icon">BS</div>
+                <div>
+                    <div class="brand-title">
+                        BreatheSafe
+                        <span style="font-size: 11px; font-weight: 500; color: #10b981; display: inline-flex; align-items: center; gap: 5px;">
+                            <span class="live-dot"></span> India Live
+                        </span>
+                    </div>
+                    <div class="brand-subtitle">School AQI Advisory System</div>
+                </div>
+            </div>
+            <div class="brand-right">
+                <button class="mock-mode-pill active" id="mock-mode-pill" onclick="toggleMockMode()" title="Toggle Offline Mock Mode vs Live AWS">
+                    <span class="mock-pill-dot"></span>
+                    <span id="mock-pill-label">Mock Mode: ON</span>
+                </button>
+                <div class="aws-tag">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 20h20"/><path d="M5 20V8l7-5 7 5v12"/></svg>
+                    AWS
+                </div>
+                <button class="api-config-btn" id="btn-api-config" title="Configure AWS Backend & Mock Mode" onclick="openConfigModal()" aria-label="Configure AWS Backend">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                </button>
+            </div>
+        </div>
+
+        <!-- Search Bar with Live Suggestions Dropdown -->
+        <div class="search-card">
+            <div class="search-box">
+                <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                <input type="text" class="search-input" id="search-input" placeholder="Search any city or state (e.g., Delhi, Mumbai, Bengaluru)..." autocomplete="off"/>
+                <button class="clear-btn" id="search-clear" onclick="clearSearch()">✕</button>
+            </div>
+            <!-- Dropdown Results -->
+            <div class="search-dropdown" id="search-dropdown"></div>
+        </div>
+
+        <!-- Status Banner: Displays Mock Mode rehearsal status or Live API Gateway status -->
+        <div class="api-key-banner" id="api-key-banner" onclick="openConfigModal()" role="button" tabindex="0" title="Click to configure AWS API Gateway & Mock Mode">
+            <div class="api-key-banner-left">
+                <span class="banner-icon" id="banner-icon">🎭</span>
+                <span id="banner-status-text">Rehearsal Mock Mode Active (Zero network calls)</span>
+            </div>
+            <span class="banner-action-link" id="banner-action-link">AWS Settings →</span>
+        </div>
+
+        <!-- Indian State Quick-Filter Chips (horizontal scroll on mobile) -->
+        <div class="chips-card">
+            <div class="state-chips" role="group" aria-label="Filter by Indian state">
+                <button class="chip-btn active" onclick="filterByState('All')">All India</button>
+                <button class="chip-btn" onclick="filterByState('Delhi')">Delhi NCR</button>
+                <button class="chip-btn" onclick="filterByState('Maharashtra')">Maharashtra</button>
+                <button class="chip-btn" onclick="filterByState('Karnataka')">Karnataka</button>
+                <button class="chip-btn" onclick="filterByState('Uttar Pradesh')">Uttar Pradesh</button>
+                <button class="chip-btn" onclick="filterByState('Tamil Nadu')">Tamil Nadu</button>
+                <button class="chip-btn" onclick="filterByState('West Bengal')">West Bengal</button>
+                <button class="chip-btn" onclick="filterByState('Punjab')">Punjab</button>
+                <button class="chip-btn" onclick="filterByState('Rajasthan')">Rajasthan</button>
+                <button class="chip-btn" onclick="filterByState('Gujarat')">Gujarat</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Desktop: floating AQI scale legend (bottom-left) -->
+    <div class="legend-card" id="legend-desktop">
+        <div class="legend-title">
+            <span>National AQI Scale</span>
+            <span style="font-weight: 500; color: var(--text-muted); font-size: 10px;">CPCB India</span>
+        </div>
+        <div class="legend-items">
+            <div class="legend-item"><span class="legend-dot" style="background: var(--aqi-good);"></span> Good (0–50)</div>
+            <div class="legend-item"><span class="legend-dot" style="background: var(--aqi-satisfactory);"></span> Satisfactory (51–100)</div>
+            <div class="legend-item"><span class="legend-dot" style="background: var(--aqi-moderate);"></span> Moderate (101–200)</div>
+            <div class="legend-item"><span class="legend-dot" style="background: var(--aqi-poor);"></span> Poor (201–300)</div>
+            <div class="legend-item"><span class="legend-dot" style="background: var(--aqi-very-poor);"></span> Very Poor (301–400)</div>
+            <div class="legend-item"><span class="legend-dot" style="background: var(--aqi-severe);"></span> Severe (401+)</div>
+        </div>
+    </div>
+
+    <!-- Mobile: tap-to-expand AQI legend bottom sheet -->
+    <button class="legend-toggle-btn" id="legend-toggle-btn" onclick="toggleMobileLegend()" aria-expanded="false">
+        📊 AQI Scale
+    </button>
+
+    <div class="legend-mobile-sheet" id="legend-mobile-sheet" aria-hidden="true">
+        <div class="legend-sheet-handle" onclick="toggleMobileLegend()"></div>
+        <div class="legend-sheet-title">National AQI Scale — CPCB India</div>
+        <div class="legend-sheet-grid">
+            <div class="legend-sheet-item"><span class="legend-sheet-dot" style="background:var(--aqi-good);"></span> Good (0–50)</div>
+            <div class="legend-sheet-item"><span class="legend-sheet-dot" style="background:var(--aqi-satisfactory);"></span> Satisfactory (51–100)</div>
+            <div class="legend-sheet-item"><span class="legend-sheet-dot" style="background:var(--aqi-moderate);"></span> Moderate (101–200)</div>
+            <div class="legend-sheet-item"><span class="legend-sheet-dot" style="background:var(--aqi-poor);"></span> Poor (201–300)</div>
+            <div class="legend-sheet-item"><span class="legend-sheet-dot" style="background:var(--aqi-very-poor);"></span> Very Poor (301–400)</div>
+            <div class="legend-sheet-item"><span class="legend-sheet-dot" style="background:var(--aqi-severe);"></span> Severe (401+)</div>
+        </div>
+    </div>
+
+    <!-- Slide-in Right Side Panel (Selected Station Advisory) -->
+    <div class="side-panel" id="side-panel">
+        <div class="mobile-handle"></div>
+        <div class="panel-header">
+            <div class="panel-station-info">
+                <div class="panel-station-title" id="panel-station-title">Anand Vihar, Delhi</div>
+                <div class="panel-station-subtitle">
+                    <span id="panel-station-region">Delhi, India</span>
+                    <span>•</span>
+                    <span id="panel-station-id">ID: 8675</span>
+                </div>
+            </div>
+            <button class="panel-close-btn" onclick="closePanel()" title="Close details">✕</button>
+        </div>
+
+        <div class="panel-content">
+            <!-- Cached Data Fallback Indicator -->
+            <div class="cached-badge" id="cached-badge">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                <span>Displaying last known cached data (API offline fallback)</span>
+            </div>
+
+            <!-- Hero Current AQI + Decision Pill -->
+            <div class="hero-aqi-box">
+                <div class="hero-aqi-left">
+                    <span class="hero-aqi-label">Current Air Quality</span>
+                    <span class="hero-aqi-num" id="hero-aqi-num" style="color: var(--aqi-poor);">185</span>
+                    <span class="hero-aqi-category" id="hero-aqi-category" style="color: var(--aqi-poor);">Moderate</span>
+                </div>
+                <div>
+                    <!-- The Clean Decision Pill (GO / CAUTION / NO-GO) -->
+                    <div class="decision-pill caution" id="decision-pill">
+                        <span class="pill-icon" id="pill-icon">⚠️</span>
+                        <span id="pill-text">CAUTION</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- School Advisory Summary -->
+            <div class="panel-section">
+                <div class="section-header-title">Tomorrow's School Advisory</div>
+                <div class="summary-text" id="advisory-summary">
+                    Air quality expected to be Moderate-to-Poor (AQI ≈ 193). Limit prolonged outdoor exertion.
+                </div>
+            </div>
+
+            <!-- 3-Day Forecast Trend Sparkline -->
+            <div class="panel-section">
+                <div class="section-header-title">
+                    <span>Forecast Projection (EWMA)</span>
+                    <span class="forecast-value" id="forecast-target-val">AQI 193</span>
+                </div>
+                <div class="forecast-container">
+                    <svg class="sparkline-svg" id="sparkline-svg" viewBox="0 0 340 60" preserveAspectRatio="none"></svg>
+                    <div class="forecast-days-grid" id="forecast-days-grid">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Recommended School Actions -->
+            <div class="panel-section">
+                <div class="section-header-title">Recommended School Actions</div>
+                <ul class="actions-checklist" id="actions-checklist">
+                    <!-- Populated by JS -->
+                </ul>
+                <div style="margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border-color);">
+                    <button class="sns-test-btn" id="sns-test-btn" onclick="simulateSnsAlert()" title="Simulate Amazon SNS Alert Delivery">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+                        Simulate Principal Alert (Amazon SNS)
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- AWS API Gateway & Mock Mode Configuration Modal -->
+    <div class="token-modal-overlay" id="token-modal-overlay" onclick="handleOverlayClick(event)">
+        <div class="token-modal-card" role="dialog" aria-labelledby="token-modal-title" aria-modal="true">
+            <div class="modal-header">
+                <div class="modal-title" id="token-modal-title">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                    AWS Backend & Demo Settings
+                </div>
+                <button class="modal-close-btn" onclick="closeConfigModal()" title="Close dialog" aria-label="Close">✕</button>
+            </div>
+
+            <!-- Offline Mock Mode Switch -->
+            <div class="switch-toggle-row">
+                <div class="switch-toggle-info">
+                    <div class="switch-toggle-title">
+                        <span>🎭 Offline Mock Mode</span>
+                    </div>
+                    <div class="switch-toggle-desc">
+                        Rehearse the demo 100% offline with zero live AWS or network dependencies.
+                    </div>
+                </div>
+                <label class="toggle-switch-wrapper">
+                    <input type="checkbox" id="modal-mock-checkbox" onchange="setMockMode(this.checked)" />
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+
+            <!-- API Gateway Endpoint Field -->
+            <div class="token-field-group">
+                <div class="token-label-row">
+                    <label for="api-gateway-input" class="token-label">Amazon API Gateway Invoke URL</label>
+                    <span class="token-status-pill" id="token-status-pill">Active</span>
+                </div>
+                <div class="token-input-wrapper">
+                    <input type="text" id="api-gateway-input" class="token-input" placeholder="https://xxxxxxxxxx.execute-api.ap-south-1.amazonaws.com" autocomplete="off" spellcheck="false" />
+                </div>
+                <p class="token-helper-text">
+                    On event day, paste your Amazon API Gateway HTTP API Invoke URL here. The third-party AQICN API token is kept strictly isolated inside AWS Lambda's environment variables and is never exposed in the browser.
+                </p>
+            </div>
+
+            <div class="modal-actions">
+                <button class="token-clear-btn" id="token-clear-btn" onclick="clearApiGatewayUrl()">Clear URL</button>
+                <button class="token-save-btn" id="token-save-btn" onclick="saveApiGatewayUrl()">Save URL</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Floating SNS Alert Toast Notification -->
+    <div id="sns-toast" role="alert" aria-live="assertive">
+        <div class="toast-header">
+            <div class="toast-title">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                Amazon SNS Alert Dispatched
+            </div>
+            <button class="toast-close-btn" onclick="hideSnsToast()">✕</button>
+        </div>
+        <div class="toast-body" id="toast-body"></div>
+    </div>
+
+    <!-- Leaflet JS CDN -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+    <script>
+    /* ================================================================
+       BreatheSafe — Interactive Map & Station Advisory System
+       ================================================================
+       Architecture:
+       - Browser calls AWS API Gateway (which forwards to Lambda)
+       - Browser NEVER calls aqicn.org directly to keep token secret
+       - Built-in nationwide Indian stations dataset provides instant
+         offline fallback with 0 latency and 100% demo reliability.
+       ================================================================ */
+
+    // ── AWS Configuration & Offline Mock Mode ─────────────────────
+    // Check URL parameters: e.g. ?mock=true or ?mode=mock
+    const urlParams = new URLSearchParams(window.location.search);
+    const mockParam = urlParams.get("mock") === "true" || urlParams.get("mode") === "mock";
+
+    // API Gateway URL: configured via local storage or deployment
+    let API_GATEWAY_URL = localStorage.getItem("breathesafe_api_url") || "";
+
+    // Mock Mode state:
+    // If ?mock=true or ?mode=mock is present, mock mode is forced.
+    // If breathesafe_mock_mode was previously saved, respect it.
+    // Otherwise defaults to true (offline rehearsal mode) until API Gateway is set.
+    let isMockMode = mockParam || (localStorage.getItem("breathesafe_mock_mode") !== "false");
+
+    let currentAdvisoryForSns = null;
+
+    function updateModeUI() {
+        const pill = document.getElementById('mock-mode-pill');
+        const pillLabel = document.getElementById('mock-pill-label');
+        const bannerIcon = document.getElementById('banner-icon');
+        const bannerText = document.getElementById('banner-status-text');
+        const bannerAction = document.getElementById('banner-action-link');
+        const modalCheckbox = document.getElementById('modal-mock-checkbox');
+
+        if (modalCheckbox) {
+            modalCheckbox.checked = isMockMode;
+        }
+
+        if (isMockMode) {
+            if (pill) pill.classList.add('active');
+            if (pillLabel) pillLabel.textContent = "Mock Mode: ON";
+            if (bannerIcon) bannerIcon.textContent = "🎭";
+            if (bannerText) bannerText.textContent = "Rehearsal Mock Mode (100% offline, zero AWS dependencies)";
+            if (bannerAction) bannerAction.textContent = "AWS Settings →";
+        } else {
+            if (pill) pill.classList.remove('active');
+            if (pillLabel) pillLabel.textContent = "Live AWS Mode";
+            if (API_GATEWAY_URL) {
+                if (bannerIcon) bannerIcon.textContent = "⚡";
+                const displayHost = API_GATEWAY_URL.replace(/^https?:\/\//, '').split('/')[0];
+                if (bannerText) bannerText.textContent = `Connected to API Gateway: ${displayHost}`;
+                if (bannerAction) bannerAction.textContent = "Change URL →";
+            } else {
+                if (bannerIcon) bannerIcon.textContent = "⚠️";
+                if (bannerText) bannerText.textContent = "No API Gateway URL configured — running offline";
+                if (bannerAction) bannerAction.textContent = "Set URL →";
+            }
+        }
+    }
+
+    function toggleMockMode() {
+        setMockMode(!isMockMode);
+    }
+
+    function setMockMode(val) {
+        isMockMode = Boolean(val);
+        localStorage.setItem("breathesafe_mock_mode", isMockMode ? "true" : "false");
+        updateModeUI();
+        if (selectedStationUid) {
+            selectStation(selectedStationUid);
+        }
+    }
+
+    function openConfigModal() {
+        const overlay = document.getElementById('token-modal-overlay');
+        const input = document.getElementById('api-gateway-input');
+        const statusPill = document.getElementById('token-status-pill');
+        const clearBtn = document.getElementById('token-clear-btn');
+        const checkbox = document.getElementById('modal-mock-checkbox');
+        if (!overlay) return;
+
+        if (checkbox) checkbox.checked = isMockMode;
+        if (input) {
+            input.value = API_GATEWAY_URL;
+            if (API_GATEWAY_URL) {
+                if (statusPill) {
+                    statusPill.style.display = "inline-flex";
+                    statusPill.textContent = "Configured";
+                }
+                if (clearBtn) clearBtn.style.display = "inline-block";
+            } else {
+                if (statusPill) statusPill.style.display = "none";
+                if (clearBtn) clearBtn.style.display = "none";
+            }
+        }
+
+        overlay.classList.add('active');
+        setTimeout(() => { if (input) input.focus(); }, 50);
+    }
+
+    function closeConfigModal() {
+        const overlay = document.getElementById('token-modal-overlay');
+        if (overlay) overlay.classList.remove('active');
+    }
+
+    function handleOverlayClick(e) {
+        if (e.target && e.target.id === 'token-modal-overlay') {
+            closeConfigModal();
+        }
+    }
+
+    function saveApiGatewayUrl() {
+        const input = document.getElementById('api-gateway-input');
+        const val = input ? input.value.trim() : "";
+        API_GATEWAY_URL = val;
+        if (val) {
+            localStorage.setItem("breathesafe_api_url", val);
+            isMockMode = false;
+            localStorage.setItem("breathesafe_mock_mode", "false");
+        } else {
+            localStorage.removeItem("breathesafe_api_url");
+            isMockMode = true;
+            localStorage.setItem("breathesafe_mock_mode", "true");
+        }
+        closeConfigModal();
+        updateModeUI();
+        if (selectedStationUid) {
+            selectStation(selectedStationUid);
+        }
+    }
+
+    function clearApiGatewayUrl() {
+        localStorage.removeItem("breathesafe_api_url");
+        API_GATEWAY_URL = "";
+        const input = document.getElementById('api-gateway-input');
+        if (input) input.value = "";
+        const statusPill = document.getElementById('token-status-pill');
+        if (statusPill) statusPill.style.display = "none";
+        const clearBtn = document.getElementById('token-clear-btn');
+        if (clearBtn) clearBtn.style.display = "none";
+        isMockMode = true;
+        localStorage.setItem("breathesafe_mock_mode", "true");
+        updateModeUI();
+    }
+
+    function simulateSnsAlert() {
+        const toast = document.getElementById('sns-toast');
+        const toastBody = document.getElementById('toast-body');
+        if (!toast || !toastBody || !currentAdvisoryForSns) return;
+
+        const adv = currentAdvisoryForSns;
+        const alertMsg = [
+            `=== BreatheSafe School Advisory ===`,
+            `Station : ${adv.name || adv.station_name || 'School Campus'}`,
+            `Region  : ${adv.state || 'India'}`,
+            `Channel : Amazon SNS -> principal@school.edu.in`,
+            ``,
+            `Current AQI    : ${adv.aqi}`,
+            `Forecasted AQI : ${adv.forecast_aqi || adv.aqi}`,
+            `Advisory       : ${adv.decision}`,
+            ``,
+            `Summary: ${adv.summary}`,
+            ``,
+            `Recommended Actions:`,
+            ...(adv.actions || []).map((a, i) => `  ${i + 1}. ${a}`),
+            `===================================`
+        ].join('\n');
+
+        toastBody.textContent = alertMsg;
+        toast.classList.add('visible');
+
+        if (window.snsToastTimer) clearTimeout(window.snsToastTimer);
+        window.snsToastTimer = setTimeout(() => {
+            hideSnsToast();
+        }, 9000);
+    }
+
+    function hideSnsToast() {
+        const toast = document.getElementById('sns-toast');
+        if (toast) toast.classList.remove('visible');
+    }
+
+    // ── Pre-populated Live Stations across Indian States ────────────
+    const NATIONAL_STATIONS = [
+        // North
+        { uid: 8675, name: "Anand Vihar, Delhi", state: "Delhi", geo: [28.6469, 77.3160], aqi: 245, forecast_aqi: 260, decision: "NO-GO" },
+        { uid: 8680, name: "Punjabi Bagh, Delhi", state: "Delhi", geo: [28.6720, 77.1310], aqi: 220, forecast_aqi: 235, decision: "NO-GO" },
+        { uid: 8685, name: "Siri Fort, Delhi", state: "Delhi", geo: [28.5504, 77.2159], aqi: 195, forecast_aqi: 188, decision: "CAUTION" },
+        { uid: 8399, name: "Talkatora, Lucknow", state: "Uttar Pradesh", geo: [26.8317, 80.8925], aqi: 182, forecast_aqi: 175, decision: "CAUTION" },
+        { uid: 8405, name: "Sector 62, Noida", state: "Uttar Pradesh", geo: [28.6258, 77.3649], aqi: 230, forecast_aqi: 242, decision: "NO-GO" },
+        { uid: 8501, name: "Civil Lines, Ludhiana", state: "Punjab", geo: [30.9010, 75.8573], aqi: 215, forecast_aqi: 228, decision: "NO-GO" },
+        { uid: 8505, name: "Golden Temple, Amritsar", state: "Punjab", geo: [31.6200, 74.8765], aqi: 178, forecast_aqi: 165, decision: "CAUTION" },
+        { uid: 8470, name: "Adarsh Nagar, Jaipur", state: "Rajasthan", geo: [26.9015, 75.8286], aqi: 155, forecast_aqi: 162, decision: "CAUTION" },
+        { uid: 8475, name: "Shastri Nagar, Jodhpur", state: "Rajasthan", geo: [26.2730, 73.0080], aqi: 140, forecast_aqi: 145, decision: "CAUTION" },
+        { uid: 8611, name: "Muradpur, Patna", state: "Bihar", geo: [25.6207, 85.1664], aqi: 192, forecast_aqi: 205, decision: "NO-GO" },
+
+        // West
+        { uid: 8344, name: "Colaba, Mumbai", state: "Maharashtra", geo: [18.9067, 72.8147], aqi: 88, forecast_aqi: 92, decision: "GO" },
+        { uid: 8345, name: "Bandra Kurla Complex, Mumbai", state: "Maharashtra", geo: [19.0662, 72.8661], aqi: 135, forecast_aqi: 140, decision: "CAUTION" },
+        { uid: 8350, name: "Shivajinagar, Pune", state: "Maharashtra", geo: [18.5314, 73.8446], aqi: 95, forecast_aqi: 90, decision: "GO" },
+        { uid: 8310, name: "Maninagar, Ahmedabad", state: "Gujarat", geo: [22.9978, 72.6033], aqi: 125, forecast_aqi: 130, decision: "CAUTION" },
+        { uid: 8722, name: "Panaji, Goa", state: "Goa", geo: [15.4909, 73.8278], aqi: 42, forecast_aqi: 45, decision: "GO" },
+
+        // South
+        { uid: 8121, name: "BTM Layout, Bengaluru", state: "Karnataka", geo: [12.9166, 77.6101], aqi: 58, forecast_aqi: 62, decision: "GO" },
+        { uid: 8125, name: "Peenya, Bengaluru", state: "Karnataka", geo: [13.0285, 77.5197], aqi: 90, forecast_aqi: 85, decision: "GO" },
+        { uid: 8200, name: "Alandur, Chennai", state: "Tamil Nadu", geo: [13.0033, 80.2016], aqi: 68, forecast_aqi: 72, decision: "GO" },
+        { uid: 8205, name: "Manali, Chennai", state: "Tamil Nadu", geo: [13.1673, 80.2606], aqi: 112, forecast_aqi: 108, decision: "CAUTION" },
+        { uid: 8550, name: "Sanathnagar, Hyderabad", state: "Telangana", geo: [17.4565, 78.4439], aqi: 82, forecast_aqi: 85, decision: "GO" },
+        { uid: 8555, name: "Zoo Park, Hyderabad", state: "Telangana", geo: [17.3507, 78.4514], aqi: 115, forecast_aqi: 120, decision: "CAUTION" },
+        { uid: 8801, name: "Kaloor, Kochi", state: "Kerala", geo: [9.9984, 76.2999], aqi: 45, forecast_aqi: 48, decision: "GO" },
+
+        // East & Northeast
+        { uid: 8412, name: "Victoria Memorial, Kolkata", state: "West Bengal", geo: [22.5448, 88.3426], aqi: 138, forecast_aqi: 145, decision: "CAUTION" },
+        { uid: 8415, name: "Rabindra Bharati, Kolkata", state: "West Bengal", geo: [22.6280, 88.3840], aqi: 165, forecast_aqi: 172, decision: "CAUTION" },
+        { uid: 8901, name: "Panbazar, Guwahati", state: "Assam", geo: [26.1860, 91.7450], aqi: 72, forecast_aqi: 75, decision: "GO" },
+        { uid: 8950, name: "Patrapada, Bhubaneswar", state: "Odisha", geo: [20.2520, 85.7650], aqi: 98, forecast_aqi: 102, decision: "CAUTION" },
+        { uid: 8750, name: "TT Nagar, Bhopal", state: "Madhya Pradesh", geo: [23.2330, 77.4000], aqi: 130, forecast_aqi: 125, decision: "CAUTION" },
+    ];
+
+    // ── Severity Styling Helper ────────────────────────────────────
+    function getAqiCategory(aqi) {
+        if (aqi <= 50)  return { label: "Good", color: "#10b981", class: "good" };
+        if (aqi <= 100) return { label: "Satisfactory", color: "#22c55e", class: "satisfactory" };
+        if (aqi <= 200) return { label: "Moderate", color: "#eab308", class: "moderate" };
+        if (aqi <= 300) return { label: "Poor", color: "#f97316", class: "poor" };
+        if (aqi <= 400) return { label: "Very Poor", color: "#ef4444", class: "very-poor" };
+        return { label: "Severe", color: "#881337", class: "severe" };
+    }
+
+    // ── Decision Logic (matches forecast.py) ──────────────────────
+    function computeDecision(forecastAqi) {
+        const aqi = Math.round(forecastAqi);
+        if (aqi <= 100) {
+            return {
+                decision: "GO",
+                pillClass: "go",
+                icon: "✓",
+                summary: `Air quality expected to be Good/Satisfactory (AQI ≈ ${aqi}). Outdoor school activities safe to proceed.`,
+                actions: [
+                    "Morning outdoor assembly may proceed normally.",
+                    "Standard PE classes, sports training, and outdoor recess permitted.",
+                    "Normal classroom window opening and ventilation allowed.",
+                    "No physical restrictions for students."
+                ]
+            };
+        } else if (aqi <= 200) {
+            return {
+                decision: "CAUTION",
+                pillClass: "caution",
+                icon: "⚠️",
+                summary: `Air quality expected to be Moderate-to-Poor (AQI ≈ ${aqi}). Limit prolonged outdoor exertion.`,
+                actions: [
+                    "Cap outdoor PE and running sessions to 20 minutes maximum.",
+                    "Consider moving morning assembly to auditorium or indoor halls.",
+                    "Students with asthma or respiratory allergies must remain indoors.",
+                    "Keep classroom windows closed during peak traffic hours."
+                ]
+            };
+        } else {
+            return {
+                decision: "NO-GO",
+                pillClass: "nogo",
+                icon: "✕",
+                summary: `Air quality expected to be Hazardous / Severe (AQI ≈ ${aqi}). All outdoor school activities must be cancelled.`,
+                actions: [
+                    "CANCEL all outdoor sports, morning assembly, and playground recess.",
+                    "Keep all classroom windows and doors tightly shut.",
+                    "Operate indoor air purifiers throughout school hours.",
+                    "Dispatch automated alert to parents recommending N95 masks for commute.",
+                    "Prepare indoor board games / auditorium activities for recess."
+                ]
+            };
+        }
+    }
+
+    // ── Initialize Leaflet Map ─────────────────────────────────────
+    let map = null;
+    let markersLayer = null;
+    let currentStationList = [...NATIONAL_STATIONS];
+    let selectedStationUid = null;
+
+    function initMap() {
+        // Center of India coordinates [22.5, 79.5]
+        map = L.map('map', {
+            zoomControl: false,
+            attributionControl: true
+        }).setView([22.5, 79.5], 5);
+
+        // Reposition zoom control to top-right
+        L.control.zoom({ position: 'topright' }).addTo(map);
+
+        // Esri Light Gray Canvas basemap — free, no key required, clean & muted
+        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+            attribution: 'Esri, HERE, Garmin, © OpenStreetMap contributors',
+            maxZoom: 16
+        }).addTo(map);
+
+        // Hide shimmer once first tile batch loads
+        map.once('load', hideLoading);
+        // Fallback: always hide after 3 s even if the 'load' event fires early
+        setTimeout(hideLoading, 3000);
+
+        markersLayer = L.layerGroup().addTo(map);
+        renderStationMarkers(currentStationList);
+
+        // Auto-select Anand Vihar for immediate demo impact
+        setTimeout(() => {
+            selectStation(8675);
+        }, 600);
+    }
+
+    // ── Render Leaflet Markers with AQI Numbers ────────────────────
+    function renderStationMarkers(stations) {
+        markersLayer.clearLayers();
+
+        stations.forEach(station => {
+            if (!station.geo || station.geo.length < 2) return;
+            const cat = getAqiCategory(station.aqi);
+
+            // Create custom HTML circular marker showing AQI value with matching AQI glow
+            const icon = L.divIcon({
+                className: 'custom-pin-container',
+                html: `<div class="aqi-map-pin ${station.uid === selectedStationUid ? 'selected' : ''}"
+                            id="pin-${station.uid}"
+                            style="background: ${cat.color}; --marker-color: ${cat.color};">
+                            ${station.aqi}
+                       </div>`,
+                iconSize: [38, 38],
+                iconAnchor: [19, 19]
+            });
+
+            const marker = L.marker([station.geo[0], station.geo[1]], { icon: icon });
+            marker.on('click', () => {
+                selectStation(station.uid);
+            });
+
+            // Clean tooltip on hover
+            marker.bindTooltip(`<b>${station.name}</b><br>AQI: ${station.aqi} (${cat.label})`, {
+                direction: 'top',
+                offset: [0, -18]
+            });
+
+            markersLayer.addLayer(marker);
+        });
+    }
+
+    // ── Select and Inspect a Station ───────────────────────────────
+    async function selectStation(uid) {
+        selectedStationUid = uid;
+
+        // Find station in local list
+        let station = currentStationList.find(s => s.uid == uid);
+        if (!station) return;
+
+        // Highlight marker
+        document.querySelectorAll('.aqi-map-pin').forEach(p => p.classList.remove('selected'));
+        const pinEl = document.getElementById(`pin-${uid}`);
+        if (pinEl) pinEl.classList.add('selected');
+
+        // Pan map smoothly to the station
+        if (station.geo && station.geo.length >= 2) {
+            map.flyTo([station.geo[0], station.geo[1]], Math.max(map.getZoom(), 8), {
+                duration: 0.8
+            });
+        }
+
+        // Check if live API Gateway or Mock Mode is active
+        let detailData = null;
+
+        if (!isMockMode && API_GATEWAY_URL) {
+            try {
+                const response = await fetch(`${API_GATEWAY_URL}?action=feed&station=${uid}`);
+                if (response.ok) {
+                    detailData = await response.json();
+                }
+            } catch (err) {
+                console.warn("[BreatheSafe] Live API Gateway fetch failed, using fallback:", err);
+            }
+        }
+
+        // In Mock Mode (or on API Gateway fallback), synthesize advisory locally without external calls
+        if (!detailData) {
+            const forecastAqi = station.forecast_aqi || station.aqi;
+            const dec = computeDecision(forecastAqi);
+            detailData = {
+                current_aqi: station.aqi,
+                forecast_aqi: forecastAqi,
+                decision: dec.decision,
+                summary: dec.summary,
+                actions: dec.actions,
+                is_cached: isMockMode ? false : true
+            };
+        }
+
+        // Store active advisory for simulated Amazon SNS notification
+        currentAdvisoryForSns = {
+            ...station,
+            ...detailData
+        };
+
+        // Render station panel with live or synthesized station data
+        renderSidePanel(station, detailData);
+    }
+
+    // ── Render Side Panel Advisory ─────────────────────────────────
+    function renderSidePanel(station, liveData) {
+        const sidePanel = document.getElementById('side-panel');
+        const cat = getAqiCategory(station.aqi);
+
+        // Header info
+        document.getElementById('panel-station-title').textContent = station.name;
+        document.getElementById('panel-station-region').textContent = `${station.state || 'India'}`;
+        document.getElementById('panel-station-id').textContent = `Station ID: ${station.uid}`;
+
+        // Cached fallback alert indicator
+        const isCached = liveData ? liveData.is_cached : false;
+        const cachedBadge = document.getElementById('cached-badge');
+        if (isCached) {
+            cachedBadge.classList.add('visible');
+        } else {
+            cachedBadge.classList.remove('visible');
+        }
+
+        // Large AQI Hero Block
+        const aqiNum = liveData ? liveData.current_aqi : station.aqi;
+        const heroNumEl = document.getElementById('hero-aqi-num');
+        const heroCatEl = document.getElementById('hero-aqi-category');
+
+        heroNumEl.textContent = aqiNum;
+        heroNumEl.style.color = cat.color;
+        heroCatEl.textContent = cat.label;
+        heroCatEl.style.color = cat.color;
+
+        // Decision Pill (GO / CAUTION / NO-GO)
+        const forecastAqi = liveData ? liveData.forecast_aqi : (station.forecast_aqi || station.aqi);
+        const decision = liveData ? {
+            decision: liveData.decision,
+            pillClass: liveData.decision.toLowerCase().replace('-', ''),
+            icon: liveData.decision === 'GO' ? '✓' : liveData.decision === 'CAUTION' ? '⚠️' : '✕',
+            summary: liveData.summary,
+            actions: liveData.actions
+        } : computeDecision(forecastAqi);
+
+        const pill = document.getElementById('decision-pill');
+        pill.className = `decision-pill ${decision.pillClass}`;
+        document.getElementById('pill-icon').textContent = decision.icon;
+        document.getElementById('pill-text').textContent = decision.decision;
+
+        // Summary
+        document.getElementById('advisory-summary').textContent = decision.summary;
+
+        // Actions Checklist
+        const actionList = document.getElementById('actions-checklist');
+        actionList.innerHTML = '';
+        decision.actions.forEach(action => {
+            const li = document.createElement('li');
+            li.className = 'action-point';
+            li.innerHTML = `
+                <svg class="action-point-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                <span>${action}</span>
+            `;
+            actionList.appendChild(li);
+        });
+
+        // Forecast Sparkline & Cards
+        renderForecastTrend(station, forecastAqi);
+
+        // Slide panel in
+        sidePanel.classList.add('open');
+    }
+
+    function renderForecastTrend(station, forecastAqi) {
+        document.getElementById('forecast-target-val').textContent = `Target AQI ${Math.round(forecastAqi)}`;
+
+        // Mock 4 points (Yesterday, Today, Tomorrow, Day After)
+        const base = station.aqi;
+        const pts = [
+            Math.max(20, Math.round(base * 0.9)),
+            base,
+            Math.round(forecastAqi),
+            Math.max(20, Math.round(forecastAqi * 1.05))
+        ];
+
+        // Draw clean SVG Sparkline
+        const svg = document.getElementById('sparkline-svg');
+        const W = 340, H = 55;
+        const minVal = Math.min(...pts) * 0.8;
+        const maxVal = Math.max(...pts) * 1.2;
+
+        function x(i) { return 15 + (i / (pts.length - 1)) * (W - 30); }
+        function y(v) { return H - 10 - ((v - minVal) / (maxVal - minVal)) * (H - 20); }
+
+        let pathD = '';
+        pts.forEach((v, i) => {
+            pathD += (i === 0 ? 'M' : 'L') + `${x(i)},${y(v)} `;
+        });
+
+        let circles = '';
+        pts.forEach((v, i) => {
+            const cat = getAqiCategory(v);
+            circles += `<circle cx="${x(i)}" cy="${y(v)}" r="4" fill="${cat.color}" stroke="#ffffff" stroke-width="2"/>`;
+        });
+
+        svg.innerHTML = `
+            <path d="${pathD}" fill="none" stroke="#232F3E" stroke-width="2.5" stroke-linecap="round"/>
+            ${circles}
+        `;
+
+        // 3-Day Forecast Cards
+        const grid = document.getElementById('forecast-days-grid');
+        const dayNames = ["Tomorrow", "+2 Days", "+3 Days"];
+        grid.innerHTML = '';
+
+        for (let i = 0; i < 3; i++) {
+            const estAqi = Math.round(forecastAqi + (i === 0 ? 0 : (i === 1 ? 8 : -5)));
+            const dCat = getAqiCategory(estAqi);
+            const card = document.createElement('div');
+            card.className = 'forecast-day-card';
+            card.innerHTML = `
+                <div class="day-label">${dayNames[i]}</div>
+                <div class="day-val" style="color: ${dCat.color}">${estAqi}</div>
+                <div class="day-range">${dCat.label}</div>
+            `;
+            grid.appendChild(card);
+        }
+    }
+
+    function closePanel() {
+        document.getElementById('side-panel').classList.remove('open');
+        document.querySelectorAll('.aqi-map-pin').forEach(p => p.classList.remove('selected'));
+        selectedStationUid = null;
+    }
+
+    // ── Search & Filter Logic ──────────────────────────────────────
+    const searchInput = document.getElementById('search-input');
+    const searchDropdown = document.getElementById('search-dropdown');
+    const searchClear = document.getElementById('search-clear');
+
+    searchInput.addEventListener('input', async (e) => {
+        const query = e.target.value.trim().toLowerCase();
+        if (query.length > 0) {
+            searchClear.style.display = 'block';
+        } else {
+            searchClear.style.display = 'none';
+            searchDropdown.classList.remove('active');
+            return;
+        }
+
+        // Live API Gateway search if configured (skipped in Mock Mode)
+        let searchResults = [];
+        if (!isMockMode && API_GATEWAY_URL && query.length >= 2) {
+            try {
+                const res = await fetch(`${API_GATEWAY_URL}?action=search&keyword=${encodeURIComponent(query)}`);
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.stations && data.stations.length > 0) {
+                        searchResults = data.stations.map(s => ({
+                            uid: s.uid,
+                            name: s.station_name,
+                            state: query.toUpperCase(),
+                            geo: s.coordinates,
+                            aqi: s.aqi
+                        }));
+                    }
+                }
+            } catch (err) {
+                console.warn("[BreatheSafe] Live search failed, filtering local list:", err);
+            }
+        }
+
+        // Fallback filter over all Indian stations
+        if (searchResults.length === 0) {
+            searchResults = NATIONAL_STATIONS.filter(s =>
+                s.name.toLowerCase().includes(query) ||
+                (s.state && s.state.toLowerCase().includes(query))
+            );
+        }
+
+        renderSearchDropdown(searchResults);
+    });
+
+    function renderSearchDropdown(items) {
+        if (!items || items.length === 0) {
+            searchDropdown.innerHTML = '<div style="padding: 12px; font-size: 12px; color: #94a3b8; text-align: center;">No matching Indian stations found</div>';
+            searchDropdown.classList.add('active');
+            return;
+        }
+
+        searchDropdown.innerHTML = '';
+        items.slice(0, 7).forEach(item => {
+            const cat = getAqiCategory(item.aqi);
+            const row = document.createElement('div');
+            row.className = 'search-item';
+            row.innerHTML = `
+                <div class="search-item-info">
+                    <div class="search-item-name">${item.name}</div>
+                    <div class="search-item-state">${item.state || 'India'}</div>
+                </div>
+                <div class="search-item-badge" style="background: ${cat.color}">${item.aqi}</div>
+            `;
+            row.onclick = () => {
+                // Ensure station exists in map layer
+                if (!currentStationList.some(s => s.uid == item.uid)) {
+                    currentStationList.push(item);
+                    renderStationMarkers(currentStationList);
+                }
+                selectStation(item.uid);
+                searchDropdown.classList.remove('active');
+                searchInput.value = item.name;
+            };
+            searchDropdown.appendChild(row);
+        });
+        searchDropdown.classList.add('active');
+    }
+
+    function clearSearch() {
+        searchInput.value = '';
+        searchClear.style.display = 'none';
+        searchDropdown.classList.remove('active');
+        filterByState('All');
+    }
+
+    // Close search dropdown on click outside
+    document.addEventListener('click', (e) => {
+        if (!e.target.closest('.search-card')) {
+            searchDropdown.classList.remove('active');
+        }
+    });
+
+    // ── Quick State Filter ─────────────────────────────────────────
+    function filterByState(state) {
+        // Update active chip
+        document.querySelectorAll('.chip-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.textContent.includes(state) || (state === 'All' && btn.textContent === 'All India'));
+        });
+
+        if (state === 'All') {
+            currentStationList = [...NATIONAL_STATIONS];
+            map.flyTo([22.5, 79.5], 5, { duration: 0.6 });
+        } else {
+            currentStationList = NATIONAL_STATIONS.filter(s => s.state && s.state.toLowerCase().includes(state.toLowerCase()));
+
+            // Zoom map to matched stations
+            if (currentStationList.length > 0 && currentStationList[0].geo) {
+                const first = currentStationList[0].geo;
+                map.flyTo([first[0], first[1]], 7, { duration: 0.6 });
+                selectStation(currentStationList[0].uid);
+            }
+        }
+        renderStationMarkers(currentStationList);
+    }
+
+    // ── Loading shimmer helpers ─────────────────────────────────────
+    function hideLoading() {
+        const el = document.getElementById('map-loading');
+        if (el) el.classList.add('hidden');
+    }
+
+    // ── Mobile legend toggle ────────────────────────────────────────
+    function toggleMobileLegend() {
+        const sheet = document.getElementById('legend-mobile-sheet');
+        const btn   = document.getElementById('legend-toggle-btn');
+        const isOpen = sheet.classList.toggle('open');
+        btn.setAttribute('aria-expanded', isOpen);
+        sheet.setAttribute('aria-hidden', !isOpen);
+    }
+
+    // Close mobile legend when tapping the map
+    document.getElementById('map').addEventListener('click', () => {
+        const sheet = document.getElementById('legend-mobile-sheet');
+        if (sheet && sheet.classList.contains('open')) toggleMobileLegend();
+    });
+
+    // ── Modal & Keyboard Event Listeners ───────────────────────────
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            closeConfigModal();
+            hideSnsToast();
+        }
+    });
+
+    const apiGatewayInputField = document.getElementById('api-gateway-input');
+    if (apiGatewayInputField) {
+        apiGatewayInputField.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                saveApiGatewayUrl();
+            }
+        });
+    }
+
+    const gearBtn = document.getElementById('btn-api-config');
+    if (gearBtn) {
+        gearBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            openConfigModal();
+        });
+    }
+
+    // ── Start Application ──────────────────────────────────────────
+    window.addEventListener('DOMContentLoaded', () => {
+        initMap();
+        updateModeUI();
+    });
+    </script>
+</body>
+</html>

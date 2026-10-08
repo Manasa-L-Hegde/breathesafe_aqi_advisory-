@@ -1,0 +1,29 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment variables (never commit API keys!)
+.env
+.env.local
+
+# Lambda deployment packages
+*.zip
+
+# Node modules (if dashboard ever gets a build step)
+node_modules/
