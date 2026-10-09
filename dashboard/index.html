@@ -1698,14 +1698,18 @@
     const urlParams = new URLSearchParams(window.location.search);
     const mockParam = urlParams.get("mock") === "true" || urlParams.get("mode") === "mock";
 
-    // API Gateway URL: configured via local storage or deployment
-    let API_GATEWAY_URL = localStorage.getItem("breathesafe_api_url") || "";
+    // Default API Gateway Invoke URL embedded directly in code for deployment.
+    // Replace with your Amazon API Gateway HTTP API Invoke URL (e.g., https://xxxxxxxxxx.execute-api.ap-south-1.amazonaws.com)
+    const DEFAULT_API_GATEWAY_URL = "https://hkq4cb4v30.execute-api.ap-south-1.amazonaws.com";
+    const savedApiUrl = localStorage.getItem("breathesafe_api_url");
+    let API_GATEWAY_URL = (savedApiUrl && savedApiUrl.startsWith("http")) ? savedApiUrl : DEFAULT_API_GATEWAY_URL;
 
     // Mock Mode state:
-    // If ?mock=true or ?mode=mock is present, mock mode is forced.
-    // If breathesafe_mock_mode was previously saved, respect it.
-    // Otherwise defaults to true (offline rehearsal mode) until API Gateway is set.
-    let isMockMode = mockParam || (localStorage.getItem("breathesafe_mock_mode") !== "false");
+    // If ?mock=true or ?mode=mock is present in query parameters, mock mode is forced.
+    // If breathesafe_mock_mode was explicitly saved in localStorage, respect it.
+    // Otherwise defaults to false (OFF) so deployed users run in live mode out of the box.
+    const savedMockMode = localStorage.getItem("breathesafe_mock_mode");
+    let isMockMode = mockParam || (savedMockMode !== null ? savedMockMode === "true" : false);
 
     let currentAdvisoryForSns = null;
 
@@ -2055,7 +2059,10 @@
 
         if (!isMockMode && API_GATEWAY_URL) {
             try {
-                const response = await fetch(`${API_GATEWAY_URL}?action=feed&station=${uid}`);
+                const baseUrl = API_GATEWAY_URL.replace(/\/+$/, '').replace(/\/forecast$/, '');
+                const fetchUrl = `${baseUrl}/forecast?station=${encodeURIComponent(uid)}`;
+                console.log("[BreatheSafe] Fetching live AQI forecast:", fetchUrl);
+                const response = await fetch(fetchUrl);
                 if (response.ok) {
                     detailData = await response.json();
                 }
@@ -2236,7 +2243,10 @@
         let searchResults = [];
         if (!isMockMode && API_GATEWAY_URL && query.length >= 2) {
             try {
-                const res = await fetch(`${API_GATEWAY_URL}?action=search&keyword=${encodeURIComponent(query)}`);
+                const baseUrl = API_GATEWAY_URL.replace(/\/+$/, '').replace(/\/forecast$/, '');
+                const searchUrl = `${baseUrl}/forecast?action=search&keyword=${encodeURIComponent(query)}`;
+                console.log("[BreatheSafe] Fetching live search:", searchUrl);
+                const res = await fetch(searchUrl);
                 if (res.ok) {
                     const data = await res.json();
                     if (data.stations && data.stations.length > 0) {
